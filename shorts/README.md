@@ -9,13 +9,24 @@ TikTok, Reels ve Shorts için dikey (1080x1920, 30 fps) Türkçe bilgi videolar�
 cd shorts
 npm install                     # yalnızca fontlar
 pip install numpy scipy pyloudnorm
-node src/build.mjs topics/muzigi-degistiren-5-cihaz.json            # tam video
-node src/build.mjs topics/muzigi-degistiren-5-cihaz.json --preview  # seslendirmesiz önizleme
+node src/build.mjs topics/muzigi-degistiren-5-cihaz.json --voice kayit.wav  # kendi sesinizle
+node src/build.mjs topics/muzigi-degistiren-5-cihaz.json                    # Google TTS ile
+node src/build.mjs topics/muzigi-degistiren-5-cihaz.json --preview          # seslendirmesiz önizleme
 ```
 
 Çıktı: `out/<id>/<id>.mp4`
 
-## Google TTS anahtarı
+## Kendi sesinizle kayıt
+
+- Konu dosyasındaki `text` alanlarını sırayla, **tek dosyada** okuyun. Bölümler arasında **1–2 saniye susun**;
+  sistem kaydı bu duraklamalardan bölümlere ayırır. İsterseniz her bölümü ayrı dosya kaydedip bir klasöre
+  koyabilirsiniz (`01.wav`, `02.wav`...).
+- Kaydı kuru gönderin: reverb, müzik ve kompresör olmasın. Low-cut, seviye (-16 LUFS), ducking ve master işlemlerini sistem yapıyor.
+- WAV, MP3, M4A ya da AIFF olabilir. Telefon kaydı da olur.
+- Kelime zamanları (`src/align.py`), kayıttaki duraklamaların noktalama işaretleriyle eşlenmesinden ve ifade içinde
+  hece sayısına göre dağıtılmasından çıkar. Ekranda yazan metin `text` alanındaki metindir, okurken birebir aynısını söyleyin.
+
+## Google TTS anahtarı (isteğe bağlı)
 
 İki yoldan biriyle eklenir:
 - Ortamın **Network secrets** bölümü: host `texttospeech.googleapis.com`, header `X-Goog-Api-Key`.
@@ -28,7 +39,8 @@ Ses, `topics/*.json` içindeki `voice` alanından seçilir (varsayılan `tr-TR-W
 
 | Adım | Dosya | Ne yapar |
 |---|---|---|
-| ① | `src/tts.mjs` | SSML ile kelime başına `<mark>` koyar, Google TTS'ten kelime zamanlarını alır ve zaman çizelgesini kurar |
+| ① | `src/align.py` | Kendi kaydınızı bölümlere ayırır, temizler ve kelime zamanlarını çıkarır |
+| ① (alternatif) | `src/tts.mjs` | SSML ile kelime başına `<mark>` koyar, Google TTS'ten kelime zamanlarını alır ve zaman çizelgesini kurar |
 | ② | `src/audio.py` | Cihaz seslerini sentezler, geçiş efektlerini ekler, vokali sidechain ile ducklar ve -14 LUFS / -1 dBFS master yapar |
 | ③ | `src/render.mjs` + `src/template.html` | Canvas'ta 3D cihazları ve altyazıyı kare kare çizer, ffmpeg ile H.264 olarak kodlar |
 
