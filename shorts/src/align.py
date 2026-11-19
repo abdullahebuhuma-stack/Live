@@ -17,6 +17,7 @@ from scipy.signal import butter, sosfilt
 
 SR = 44100
 HOP = 0.01  # 10 ms çerçeve
+# Tempo: konu dosyasında "pace" ile değiştirilebilir (ör. {"lead": {...}, "tail": {...}, "maxPause": 0.3})
 LEAD = {"hook": 0.5, "device": 0.75, "outro": 0.45}
 TAIL = {"hook": 0.35, "device": 2.1, "outro": 1.6}
 VOWELS = set("aeıioöuüAEIİOÖUÜâîû")
@@ -196,9 +197,36 @@ def trim(x):
     return y
 
 
+def tighten(x, max_pause):
+    """Cümle içi duraklamaları en fazla max_pause saniyeye kısalt (kısa crossfade ile)."""
+    g, _ = gaps(voiced_mask(frames_db(x)))
+    n, keep, cut = int(HOP * SR), [], 0
+    xf = int(0.01 * SR)
+    out, last = [], 0
+    for a, b in g:
+        dur = (b - a) * HOP
+        if dur <= max_pause: continue
+        mid = (a + b) // 2
+        half = int(max_pause / 2 / HOP)
+        c0, c1 = (mid - half) * n, (mid + half) * n
+        seg = x[last:c0].copy()
+        out.append(seg); last = c1
+    out.append(x[last:])
+    y = out[0]
+    for seg in out[1:]:
+        if len(y) > xf and len(seg) > xf:
+            fade = np.linspace(1, 0, xf)
+            y = np.concatenate([y[:-xf], y[-xf:] * fade + seg[:xf] * (1 - fade), seg[xf:]])
+        else:
+            y = np.concatenate([y, seg])
+    return y
+
+
 def main(topic_path, rec):
     topic = json.load(open(topic_path))
     segs = topic["segments"]
+    pace = topic.get("pace", {})
+    lead, tail = {**LEAD, **pace.get("lead", {})}, {**TAIL, **pace.get("tail", {})}
     aliases = topic.get("aliases", {})
     out_dir = os.path.join("out", topic["id"]); vdir = os.path.join(out_dir, "voice")
     os.makedirs(vdir, exist_ok=True)
@@ -214,6 +242,8 @@ def main(topic_path, rec):
     # temizlik: low-cut + tüm kaydı -16 LUFS'a getir
     sos = butter(2, 80 / (SR / 2), "high", output="sos")
     parts = [trim(sosfilt(sos, p)) for p in parts]
+    if pace.get("maxPause"):
+        parts = [tighten(p, pace["maxPause"]) for p in parts]
     meter = pyln.Meter(SR)
     allv = np.concatenate(parts)
     gain = 10 ** ((-16 - meter.integrated_loudness(allv)) / 20)
@@ -229,7 +259,7 @@ def main(topic_path, rec):
         g, span = gaps(voiced_mask(frames_db(x)))
         pauses = [(a * HOP, b * HOP) for a, b in g if (b - a) * HOP >= 0.12]
         s0, s1 = span[0] * HOP, span[1] * HOP
-        start = cursor; vs = start + LEAD[seg["kind"]]; ve = vs + dur; end = ve + TAIL[seg["kind"]]
+        start = cursor; vs = start + lead[seg["kind"]]; ve = vs + dur; end = ve + tail[seg["kind"]]
         words = seg["text"].split()
         wt = word_times(words, s0, s1, aliases, pauses)
         for w in wt: w["t0"] = round(w["t0"] + vs, 3); w["t1"] = round(w["t1"] + vs, 3)

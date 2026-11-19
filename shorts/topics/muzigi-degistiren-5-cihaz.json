@@ -1,7 +1,24 @@
 {
   "id": "muzigi-degistiren-5-cihaz",
   "series": "MÜZİĞİ DEĞİŞTİREN 5 CİHAZ",
-  "voice": { "name": "tr-TR-Wavenet-E", "speakingRate": 1.08, "pitch": -1.0 },
+  "voice": {
+    "name": "tr-TR-Wavenet-E",
+    "speakingRate": 1.08,
+    "pitch": -1.0
+  },
+  "pace": {
+    "lead": {
+      "hook": 0.25,
+      "device": 0.45,
+      "outro": 0.35
+    },
+    "tail": {
+      "hook": 0.2,
+      "device": 1.3,
+      "outro": 1.2
+    },
+    "maxPause": 0.3
+  },
   "aliases": {
     "Minimoog": "Minimug",
     "TR-808": "ti ar sekiz yüz sekiz",
@@ -23,28 +40,53 @@
       "text": "Modern müziğin sesini bu beş cihaz kurdu. Kaçını tanıyorsun?"
     },
     {
-      "kind": "device", "n": 1, "device": "moog",
-      "name": "Minimoog", "maker": "MOOG", "year": 1970, "tag": "Sahneye çıkan ilk synth'lerden",
+      "kind": "device",
+      "n": 1,
+      "device": "moog",
+      "name": "Minimoog",
+      "maker": "MOOG",
+      "year": 1970,
+      "tag": "Sahneye çıkan ilk synth'lerden",
       "text": "Bir: Minimoog. Sentezleyiciyi laboratuvardan çıkarıp sahneye taşıdı. O kalın bas ve lead sesleri buradan geliyor."
     },
     {
-      "kind": "device", "n": 2, "device": "tr808",
-      "name": "TR-808", "maker": "ROLAND", "year": 1980, "tag": "Davul makinesi",
+      "kind": "device",
+      "n": 2,
+      "device": "tr808",
+      "name": "TR-808",
+      "maker": "ROLAND",
+      "year": 1980,
+      "tag": "Davul makinesi",
       "text": "İki: Roland TR-808. Çıktığında başarısız sayıldı, üç yılda üretimden kalktı. Sonra hip-hop'un kalbi oldu."
     },
     {
-      "kind": "device", "n": 3, "device": "tb303",
-      "name": "TB-303", "maker": "ROLAND", "year": 1981, "tag": "Bas makinesi",
+      "kind": "device",
+      "n": 3,
+      "device": "tb303",
+      "name": "TB-303",
+      "maker": "ROLAND",
+      "year": 1981,
+      "tag": "Bas makinesi",
       "text": "Üç: Roland TB-303. Gitaristlere bas eşliği için yapıldı, satmadı. Yıllar sonra o cıvıltılı sesiyle acid house'u doğurdu."
     },
     {
-      "kind": "device", "n": 4, "device": "dx7",
-      "name": "DX7", "maker": "YAMAHA", "year": 1983, "tag": "FM sentez",
+      "kind": "device",
+      "n": 4,
+      "device": "dx7",
+      "name": "DX7",
+      "maker": "YAMAHA",
+      "year": 1983,
+      "tag": "FM sentez",
       "text": "Dört: Yamaha DX7. FM sentezini milyonlarca şarkıya taşıdı. Seksenlerin pop baladlarındaki o elektrik piyano sesi bu."
     },
     {
-      "kind": "device", "n": 5, "device": "mpc",
-      "name": "MPC60", "maker": "AKAI", "year": 1988, "tag": "Sampler + sequencer",
+      "kind": "device",
+      "n": 5,
+      "device": "mpc",
+      "name": "MPC60",
+      "maker": "AKAI",
+      "year": 1988,
+      "tag": "Sampler + sequencer",
       "text": "Beş: Akai MPC60. Roger Linn'le tasarlandı. Sample'ı parmak ucuna getirdi, hip-hop prodüksiyonunu baştan yazdı."
     },
     {
