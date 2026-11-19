@@ -392,7 +392,7 @@ def limiter(x, ceiling=0.89, look=0.004, rel=0.08):
     return x * out
 
 
-def main(tl_path, bgm_path=None):
+def main(tl_path, bgm_path=None, bgm_db=0.0):
     tl = json.load(open(tl_path))
     out_dir = os.path.dirname(tl_path)
     D = tl["duration"]; N = sec(D) + sec(0.5)
@@ -460,7 +460,7 @@ def main(tl_path, bgm_path=None):
         env = lp(env, 6, 1)
         env *= np.clip(tt / 0.3, 0, 1) * np.clip((D + 0.4 - tt) / 1.5, 0, 1)
         g = env * (1 - 0.6 * (1 - duck) / 0.55)  # konuşmada ~-12 dB
-        bg = bg * (g * 0.55)[:, None]
+        bg = bg * (g * 0.55 * 10 ** (bgm_db / 20))[:, None]
         L, R_ = mix + bg[:, 0], mix + bg[:, 1]
         music_bus = music_bus + bg.mean(1) / 0.85
 
@@ -511,4 +511,4 @@ def main(tl_path, bgm_path=None):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None, float(sys.argv[3]) if len(sys.argv) > 3 else 0.0)
