@@ -1,0 +1,4 @@
+node_modules/
+shorts/out/
+shorts/.cache/
+__pycache__/
