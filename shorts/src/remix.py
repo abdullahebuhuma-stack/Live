@@ -1,9 +1,11 @@
 """Afro-Türk house remix (122 BPM) — orijinalin vokal stem'i üzerine sıfırdan yeni prodüksiyon.
 
 Kullanım: python3 src/remix.py <stem klasörü (vocals/drums/bass/other.wav)> <çıkış klasörü>
-Orijinal analiz: 128.0 BPM, ilk ölçü başı 0.887 sn, Mi minör. Vokal formant korunarak 122 BPM'e uyarlanır
-(rubberband R3). Akorlar orijinalin her ölçüsündeki bas kökü + minör/majör tespitinden türetilir; aranjman
-orijinalin enerji haritasını izler. Çıktılar: remix WAV, Ableton için ayrı stem'ler ve MIDI dosyaları.
+Orijinalin tempo haritası ölçülerek bulundu: A bölümü (0–84 sn) 152 BPM, B (84–126 sn) 128.02 BPM, C serbest.
+Vokal cümle cümle ayrılır; her cümle kendi bölümünün temposundan 122'ye uyarlanır (rubberband R3, formant korumalı)
+ve kaynak grid'deki vuruş konumu korunarak yerleştirilir. C bölümünde oran ve kaydırma grid'e uyumla seçilir.
+Doğrulama: orijinal synth stem'i aynı haritayla taşındığında 122 grid'ine medyan ~11 ms oturur (rastgele ≈31 ms).
+Çıktılar: remix WAV, Ableton için ayrı stem'ler ve MIDI dosyaları.
 """
 import json, os, subprocess, sys
 import numpy as np, soundfile as sf, pyloudnorm as pyln, librosa, mido
@@ -36,79 +38,146 @@ def load_mono(p, sr=22050):
 
 sr2 = 22050
 vo, ba, ot, dr = (load_mono(os.path.join(stem_dir, f + ".wav")) for f in ("vocals", "bass", "other", "drums"))
-src_bar = 4 * 60 / SRC_BPM
-nbars = int((len(vo) / sr2 - SRC_BAR0) // src_bar)
+# ── kaynak tempo haritası (ölçülerek bulundu): A bölümü 152 BPM, B bölümü 128.02 BPM, C serbest/rubato
+#    A: synth/gitar vuruşları 152'lik grid'e 6–8 ms; B: 128.02'lik grid'e 3–9 ms oturuyor (synth vuruş üstü, bas offbeat).
+GRIDS = {"A": (152.0, 0.0868, 0.0, 84.0), "B": (128.02, 0.4345, 84.0, 126.0)}
+def region(t):
+    for k, (_, _, a_, b_) in GRIDS.items():
+        if a_ <= t < b_: return k
+    return "C"
+
+# ── vokal cümleleri
+from scipy.ndimage import binary_closing, label
+vfull, vsr = sf.read(os.path.join(stem_dir, "vocals.wav"))
+if vfull.ndim == 1: vfull = np.stack([vfull, vfull], 1)
+if vsr != SR: vfull = librosa.resample(vfull.T, orig_sr=vsr, target_sr=SR).T
+vmono = vfull.mean(1); hopv = int(0.01 * SR); fr = len(vmono) // hopv
+dbv = 20 * np.log10(np.sqrt(np.mean(vmono[: fr * hopv].reshape(fr, hopv) ** 2, 1)) + 1e-9)
+lab, nl = label(binary_closing(dbv > dbv.max() - 32, structure=np.ones(30)))
+phrases = []
+for k in range(1, nl + 1):
+    ix = np.where(lab == k)[0]; s_, e_ = ix[0] * 0.01, (ix[-1] + 1) * 0.01
+    if e_ - s_ >= 0.35: phrases.append([max(0.0, s_ - 0.05), min(len(vmono) / SR, e_ + 0.12)])
+
+def stretch(x, ratio):
+    t1 = os.path.join(out_dir, "_p_in.wav"); t2 = os.path.join(out_dir, "_p_out.wav")
+    sf.write(t1, x, SR, subtype="FLOAT")
+    subprocess.run(["rubberband", "-q", "-3", "-F", "-t", f"{ratio:.6f}", t1, t2], check=True, capture_output=True)
+    y, _ = sf.read(t2); os.remove(t1); os.remove(t2)
+    return y if y.ndim == 2 else np.stack([y, y], 1)
+
+def onsets_of(x):
+    o = librosa.onset.onset_strength(y=x.mean(1).astype(np.float32), sr=SR, hop_length=128)
+    pk = librosa.util.peak_pick(o, pre_max=20, post_max=20, pre_avg=60, post_avg=60, delta=np.percentile(o, 90) * 0.4, wait=40)
+    return pk * 128 / SR
+
+placed = []   # (src_s, src_e, dst_s, dst_e, audio, bölge, oran)
+cursor_beat = INTRO * 4.0      # remix vuruş indeksi
+prev = None
+for ps, pe in phrases:
+    reg = region(ps)
+    x = vfull[sec(ps):sec(pe)]
+    if reg in GRIDS:
+        bpm_s, ph, _, _ = GRIDS[reg]; P = 60 / bpm_s; ratio = BEAT / P
+        u0 = (ps - ph) / P                          # kaynakta kesirli vuruş konumu
+        if prev is None:
+            beat_idx = cursor_beat + (u0 - np.floor(u0))
+        elif prev["reg"] == reg:                    # aynı bölge: kaynak vuruş farkını aynen koru
+            beat_idx = prev["beat0"] + (u0 - prev["u0"])
+        else:                                       # bölge geçişi: boşluğu tam vuruşa yuvarla, kesri koru
+            gap_beats = (ps - prev["src_e"]) / P
+            beat_idx = np.ceil(prev["dst_e_beat"] + gap_beats) + (u0 - np.floor(u0))
+        y = stretch(x, ratio); ds = beat_idx * BEAT
+        prev_info = {"reg": reg, "u0": u0, "beat0": beat_idx}
+    else:                                           # C: her cümle için en iyi oran ve kaydırma
+        best = None
+        for bpm_s in (152.0, 128.02):
+            ratio = BEAT / (60 / bpm_s); y_ = stretch(x, ratio); on = onsets_of(y_)
+            nominal = prev["dst_e_beat"] * BEAT + (ps - prev["src_e"]) * ratio if prev else cursor_beat * BEAT
+            for sh in np.arange(-BEAT / 2, BEAT / 2, STEP / 8):
+                q = (nominal + sh + on) / STEP; d = np.median(np.abs(q - np.round(q))) if len(on) else 1
+                if best is None or d < best[0]: best = (d, bpm_s, ratio, y_, nominal + sh)
+        _, bpm_s, ratio, y, ds = best; beat_idx = ds / BEAT
+        prev_info = {"reg": reg, "u0": 0, "beat0": beat_idx}
+    if placed and ds < placed[-1][3] - 0.02:        # çakışmayı önle: bir sonraki 16'lığa it (vuruş kesri korunur)
+        ds += np.ceil((placed[-1][3] - ds) / BEAT) * BEAT
+        prev_info["beat0"] = ds / BEAT
+    de = ds + len(y) / SR
+    placed.append((ps, pe, ds, de, y, reg, ratio))
+    prev = {**prev_info, "src_e": pe, "dst_e_beat": de / BEAT}
+# DOĞRULAMA: orijinal "other" stem'ini aynı haritayla taşı (A ve B bölgeleri, her bölgenin ilk cümlesinin çapası)
+ofull, _ = sf.read(os.path.join(stem_dir, "other.wav"))
+if ofull.ndim == 1: ofull = np.stack([ofull, ofull], 1)
+check = np.zeros((sec(400), 2))
+for reg_ in ("A", "B"):
+    first_ = next((p_ for p_ in placed if p_[5] == reg_), None)
+    if first_ is None: continue
+    bpm_s, ph, ra, rb = GRIDS[reg_]; P = 60 / bpm_s
+    s0 = max(ra, first_[0] - 8); s1 = min(rb, s0 + 30)
+    u_first = (first_[0] - ph) / P; d_first = first_[2] / BEAT
+    d0 = (d_first + ((s0 - ph) / P - u_first)) * BEAT
+    y_ = stretch(ofull[sec(s0):sec(s1)], BEAT / P); i_ = sec(d0); check[i_:i_ + len(y_)] += y_[: len(check) - i_]
+    print(f"  doğrulama {reg_}: kaynak {s0:.1f}–{s1:.1f} sn → remix {d0:.2f}–{d0 + len(y_) / SR:.2f} sn")
+sf.write(os.path.join(out_dir, "_check_other.wav"), check, SR, subtype="FLOAT")
+regs = [p_[5] for p_ in placed]
+print(f"Vokal: {len(placed)} cümle — A(152→122): {regs.count('A')}, B(128.02→122): {regs.count('B')}, C(cümle bazlı): {regs.count('C')}")
+
+vocal_end_bar = int(np.ceil(placed[-1][3] / BAR))
+total_bars = vocal_end_bar + OUTRO
+N = sec(total_bars * BAR) + sec(4)
+voc_dry = np.zeros((N, 2))
+for ps, pe, ds, de, y, reg, ratio in placed:
+    i = sec(ds); n = min(len(y), N - i)
+    f_ = np.ones(n); fl = min(sec(0.01), n // 2); f_[:fl] = np.linspace(0, 1, fl); f_[-fl:] = np.linspace(1, 0, fl)
+    voc_dry[i:i + n] += y[:n] * f_[:, None]
+
+# remix zamanı → kaynak zamanı (armoni ve enerji analizi için)
+anc_d = [0.0] + sum([[p_[2], p_[3]] for p_ in placed], []); anc_s = [placed[0][0] - placed[0][2] / 1.2] + sum([[p_[0], p_[1]] for p_ in placed], [])
+anc_d, anc_s = np.array(anc_d), np.array(anc_s)
+order = np.argsort(anc_d); anc_d, anc_s = anc_d[order], np.maximum.accumulate(anc_s[order])
+to_src = lambda t: float(np.interp(t, anc_d, anc_s))
+
 Cb = librosa.feature.chroma_cqt(y=ba, sr=sr2, hop_length=512)
 Co = librosa.feature.chroma_cqt(y=ot + 0.5 * vo, sr=sr2, hop_length=512)
 fps = sr2 / 512
-bars = []
-for n in range(nbars):
-    a, b = SRC_BAR0 + n * src_bar, SRC_BAR0 + (n + 1) * src_bar
-    ia, ib = int(a * fps), int(b * fps)
-    cb, co = Cb[:, ia:ib].mean(1), Co[:, ia:ib].mean(1)
-    be = np.sqrt(np.mean(ba[int(a * sr2):int(b * sr2)] ** 2))
-    root = int(np.argmax(cb if be > 0.01 else co))
-    minor = co[(root + 3) % 12] >= co[(root + 4) % 12]
-    seg = lambda x: np.sqrt(np.mean(x[int(a * sr2):int(b * sr2)] ** 2))
-    bars.append({"root": root, "minor": bool(minor), "energy": float(seg(dr) + seg(ba) + seg(ot)), "vocal": float(seg(vo))})
-# Mi minör (armonik) diyatonik tipler: Em, F#m, G, Am, B(majör, V), C, D — ölçüm gürültüsüne karşı sabitle
 KEY_Q = {4: True, 6: True, 7: False, 9: True, 11: False, 0: False, 2: False}
+def bar_info(a, b):
+    a, b = max(0.0, a), max(a + 0.2, b)
+    ia, ib = int(a * fps), max(int(a * fps) + 1, int(b * fps))
+    cb, co = Cb[:, ia:ib].mean(1), Co[:, ia:ib].mean(1)
+    seg = lambda x: float(np.sqrt(np.mean(x[int(a * sr2):int(b * sr2)] ** 2))) if int(b * sr2) > int(a * sr2) else 0.0
+    root = int(np.argmax(cb if seg(ba) > 0.01 else co))
+    return {"root": root, "energy": seg(dr) + seg(ba) + seg(ot)}
+bars = [bar_info(to_src(b * BAR), to_src((b + 1) * BAR)) for b in range(INTRO, vocal_end_bar)]
+prev_ok = 4
 for b_ in bars:
-    if b_["root"] in KEY_Q: b_["minor"] = KEY_Q[b_["root"]]
-# kök değişimini sakinleştir: tek ölçülük sapmaları komşulara eşitle
-for n in range(1, nbars - 1):
-    if bars[n - 1]["root"] == bars[n + 1]["root"] != bars[n]["root"] and bars[n]["energy"] > 0:
+    if b_["root"] not in KEY_Q: b_["root"] = prev_ok
+    prev_ok = b_["root"]; b_["minor"] = KEY_Q[b_["root"]]
+for n in range(1, len(bars) - 1):
+    if bars[n - 1]["root"] == bars[n + 1]["root"] != bars[n]["root"]:
         bars[n]["root"], bars[n]["minor"] = bars[n - 1]["root"], bars[n - 1]["minor"]
-
-vmax = max(b["vocal"] for b in bars)
-first = next(i for i, b in enumerate(bars) if b["vocal"] > 0.15 * vmax) - 1
-last = max(i for i, b in enumerate(bars) if b["vocal"] > 0.15 * vmax) + 1
-used = list(range(max(first, 0), min(last + 1, nbars)))
-E = np.array([bars[i]["energy"] for i in used])
-q1, q2 = np.percentile(E, [30, 62])
+E = np.array([b_["energy"] for b_ in bars]); q1, q2 = np.percentile(E, [30, 62])
 levels = [0 if e < q1 else (1 if e < q2 else 2) for e in E]
-# 4 ölçülük bloklara yuvarla (aranjman 4'lü cümlelerle hareket etsin)
-for s in range(0, len(levels), 4):
-    blk = levels[s:s + 4]; v = int(round(np.median(blk)))
-    levels[s:s + 4] = [v] * len(blk)
+for s0 in range(0, len(levels), 4):
+    blk = levels[s0:s0 + 4]; v_ = int(round(np.median(blk))); levels[s0:s0 + 4] = [v_] * len(blk)
 
 NAMES = "C C# D D# E F F# G G# A A# B".split()
-total_bars = INTRO + len(used) + OUTRO
-plan = []  # remix ölçüsü başına: kök, tip, seviye
-loop = [bars[i] for i in used[:4]]
+plan = []
 for i in range(INTRO):
-    plan.append({**loop[i % 4], "level": [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2][i], "intro": i})
-for j, i in enumerate(used):
-    plan.append({**bars[i], "level": levels[j]})
-endloop = [bars[i] for i in used[-4:]]
+    plan.append({**bars[i % 4], "level": [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2][i], "intro": i})
+for j, b_ in enumerate(bars):
+    plan.append({**b_, "level": levels[j]})
 for i in range(OUTRO):
-    plan.append({**endloop[i % 4], "level": [2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0][i], "outro": i})
-print(f"Orijinal: {nbars} ölçü, vokal ölçü {used[0]}–{used[-1]}. Remix: {total_bars} ölçü, {total_bars * BAR / 60:.2f} dk")
-print("Akor haritası (ilk 16):", " ".join(NAMES[b["root"]] + ("m" if b["minor"] else "") for b in [bars[i] for i in used[:16]]))
-print("Seviye haritası:", "".join(str(p["level"]) for p in plan))
-
-N = sec(total_bars * BAR) + sec(4)
+    plan.append({**bars[-4:][i % 4], "level": [2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0][i], "outro": i})
+print(f"Remix: {total_bars} ölçü, {total_bars * BAR / 60:.2f} dk")
+print("Akor haritası:", " ".join(NAMES[b_["root"]] + ("m" if b_["minor"] else "") for b_ in bars[:16]))
+print("Seviye haritası:", "".join(str(p_["level"]) for p_ in plan))
 bt = lambda bar, step=0: bar * BAR + step * STEP
-swing = lambda st: STEP * 0.08 if st % 2 else 0.0   # hafif 16'lık swing
+swing = lambda st: STEP * 0.08 if st % 2 else 0.0
 
-
-# ───────────── 2. vokal: 122 BPM'e uyarlama + işleme ─────────────
-tmp = os.path.join(out_dir, "_v_in.wav"); tmp2 = os.path.join(out_dir, "_v_st.wav")
-vfull, vsr = sf.read(os.path.join(stem_dir, "vocals.wav"))
-vfull = librosa.resample(vfull.T, orig_sr=vsr, target_sr=SR).T if vsr != SR else vfull
-a0 = SRC_BAR0 + used[0] * src_bar
-vcut = vfull[sec(a0): sec(SRC_BAR0 + (used[-1] + 1) * src_bar + 2)]
-sf.write(tmp, vcut, SR, subtype="FLOAT")
-subprocess.run(["rubberband", "-q", "-3", "-F", "-T", f"{BPM / SRC_BPM:.6f}", tmp, tmp2], check=True)
-vst, _ = sf.read(tmp2); os.remove(tmp); os.remove(tmp2)
-if vst.ndim == 1: vst = np.stack([vst, vst], 1)
-
-voc_dry = np.zeros((N, 2)); i0 = sec(INTRO * BAR)
-n = min(len(vst), N - i0); voc_dry[i0:i0 + n] = vst[:n]
 vm = voc_dry.mean(1)
 vproc = hp(vm, 140)
-env = lp(np.abs(vproc), 15, 1); vproc = vproc / (1 + 3 * np.clip(env - 0.05, 0, None))  # yumuşak kompresör
-# reverb (üretilmiş IR) + noktalı 8'lik delay
+env = lp(np.abs(vproc), 15, 1); vproc = vproc / (1 + 3 * np.clip(env - 0.05, 0, None))
 irn = sec(2.2); ir = noise(irn) * np.exp(-np.arange(irn) / (0.55 * SR)); ir = lp(ir, 5000)
 ir2 = np.roll(ir, sec(0.013))
 rev = np.stack([fftconvolve(vproc, ir)[:N], fftconvolve(vproc, ir2)[:N]], 1) * 0.045
@@ -254,8 +323,8 @@ for b, p in enumerate(plan):
     prev_level = lv
 
 # vokal chop teaser (intro 8–15. ölçüler): vokalin en güçlü ölçüsünden 8'lik dilimler
-vbar = max(range(len(used)), key=lambda j: bars[used[j]]["vocal"])
-vs = vm[sec((INTRO + vbar) * BAR): sec((INTRO + vbar + 1) * BAR)]
+vbar = max(range(INTRO, vocal_end_bar), key=lambda b_: np.sqrt(np.mean(vm[sec(b_ * BAR):sec((b_ + 1) * BAR)] ** 2)))
+vs = vm[sec(vbar * BAR): sec((vbar + 1) * BAR)]
 ch8 = [fade(vs[sec(k * 2 * STEP): sec(k * 2 * STEP + 1.8 * STEP)], 0.003, 0.02) for k in range(8)]
 chops = np.zeros(N)
 for b in range(8, 16):
@@ -312,6 +381,7 @@ print(f"{outf}: {meter.integrated_loudness(y):.1f} LUFS, true peak {M.true_peak(
 for k, v in buses.items():
     sf.write(os.path.join(out_dir, "ableton_stems", f"{k}.wav"), v[:end] * 0.5, SR, subtype="PCM_24")
 sf.write(os.path.join(out_dir, "ableton_stems", "vocal_dry_122bpm.wav"), voc_dry[:end], SR, subtype="PCM_24")
+
 for k, evs in midi.items():
     mf = mido.MidiFile(ticks_per_beat=480); tr = mido.MidiTrack(); mf.tracks.append(tr)
     tr.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(BPM)))
