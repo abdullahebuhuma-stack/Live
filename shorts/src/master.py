@@ -31,20 +31,25 @@ def tp_limit(x, ceil_db, look=0.0015, rel=0.12):
 def true_peak(x):
     return 20 * np.log10(np.abs(resample_poly(x, 4, 1, axis=0)).max())
 
-inp, outp, target = sys.argv[1], sys.argv[2], float(sys.argv[3])
-ceil = float(sys.argv[4]) if len(sys.argv) > 4 else -1.0
-x = load(inp)
-x = x - x.mean(0)
-x = sosfilt(butter(2, 18 / (SR / 2), 'high', output='sos'), x, axis=0)   # subsonik
-x = peq(x, 280, -1.5, 0.8)    # alt-orta dolgunluğu
-x = peq(x, 4000, 1.5, 0.7)    # varlık/anlaşılırlık
-m = pyln.Meter(SR)
-for _ in range(4):  # limiter sonrası loudness'i hedefe yakınsat
-    y = x * 10 ** ((target - m.integrated_loudness(x)) / 20)
-    y, gr = tp_limit(y, ceil - 0.3)
-    diff = target - m.integrated_loudness(y)
-    if abs(diff) < 0.05: break
-    x = x * 10 ** (diff / 20)
-y = y * 10 ** ((target - m.integrated_loudness(y)) / 20)
-sf.write(outp, y, SR, subtype='PCM_24')
-print(f"{outp}: {m.integrated_loudness(y):.1f} LUFS, true peak {true_peak(y):.2f} dBTP, en fazla limiter kazanç azaltımı {gr:.1f} dB")
+def main():
+    inp, outp, target = sys.argv[1], sys.argv[2], float(sys.argv[3])
+    ceil = float(sys.argv[4]) if len(sys.argv) > 4 else -1.0
+    x = load(inp)
+    x = x - x.mean(0)
+    x = sosfilt(butter(2, 18 / (SR / 2), 'high', output='sos'), x, axis=0)   # subsonik
+    x = peq(x, 280, -1.5, 0.8)    # alt-orta dolgunluğu
+    x = peq(x, 4000, 1.5, 0.7)    # varlık/anlaşılırlık
+    m = pyln.Meter(SR)
+    for _ in range(4):  # limiter sonrası loudness'i hedefe yakınsat
+        y = x * 10 ** ((target - m.integrated_loudness(x)) / 20)
+        y, gr = tp_limit(y, ceil - 0.3)
+        diff = target - m.integrated_loudness(y)
+        if abs(diff) < 0.05: break
+        x = x * 10 ** (diff / 20)
+    y = y * 10 ** ((target - m.integrated_loudness(y)) / 20)
+    sf.write(outp, y, SR, subtype='PCM_24')
+    print(f"{outp}: {m.integrated_loudness(y):.1f} LUFS, true peak {true_peak(y):.2f} dBTP, en fazla limiter kazanç azaltımı {gr:.1f} dB")
+
+
+if __name__ == '__main__':
+    main()
