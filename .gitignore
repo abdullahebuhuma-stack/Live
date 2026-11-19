@@ -2,3 +2,4 @@ node_modules/
 shorts/out/
 shorts/.cache/
 __pycache__/
+shorts/assets/music/
