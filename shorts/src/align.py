@@ -140,14 +140,36 @@ def word_times(words, t0, t1, aliases, pauses):
     return out
 
 
-def split_single(x, n_seg):
+def split_single(x, segs, aliases):
+    """Bölüm sınırlarını seç: uzun ve metne göre beklenen konuma (hece oranı) yakın boşluklar. Sıra korunur."""
+    n_seg = len(segs)
     db = frames_db(x)
     v = voiced_mask(db)
-    g, _ = gaps(v)
+    g, span = gaps(v)
+    g = [p for p in g if (p[1] - p[0]) * HOP >= 0.35]
     if len(g) < n_seg - 1:
         sys.exit(f"Kayıtta {n_seg} bölümü ayıracak kadar duraklama bulunamadı. Bölümler arasında ~1 sn susun "
                  f"ya da her bölümü ayrı dosya olarak kaydedin.")
-    cuts = sorted(sorted(g, key=lambda p: p[1] - p[0], reverse=True)[: n_seg - 1])
+    syl = [sum(syllables(w, aliases) for w in s["text"].split()) for s in segs]
+    tot, c, exp = sum(syl), 0, []
+    for s in syl[:-1]:
+        c += s; exp.append(span[0] + (span[1] - span[0]) * c / tot)
+    k, m = n_seg - 1, len(g)
+    sec_ = lambda f: f * HOP
+    cost = lambda i, j: abs(sec_((g[j][0] + g[j][1]) / 2 - exp[i])) - 2.5 * sec_(g[j][1] - g[j][0])
+    INF = float("inf")
+    D = [[INF] * m for _ in range(k)]; B = [[-1] * m for _ in range(k)]
+    for j in range(m): D[0][j] = cost(0, j)
+    for i in range(1, k):
+        best, bj = INF, -1
+        for j in range(m):
+            if j > 0 and D[i - 1][j - 1] < best: best, bj = D[i - 1][j - 1], j - 1
+            if bj >= 0: D[i][j] = best + cost(i, j); B[i][j] = bj
+    j = min(range(m), key=lambda j: D[k - 1][j]); cuts = []
+    for i in range(k - 1, -1, -1):
+        cuts.append(g[j]); j = B[i][j]
+    cuts.reverse()
+    print("Bölüm sınırları (sn):", ", ".join(f"{(a + b) / 2 * HOP:.1f}" for a, b in cuts))
     short = [(b - a) * HOP for a, b in cuts if (b - a) * HOP < 0.45]
     if short:
         print(f"Uyarı: bazı bölüm araları çok kısa ({', '.join(f'{s:.2f}' for s in short)} sn); bölünme yanlış olabilir.")
@@ -187,7 +209,7 @@ def main(topic_path, rec):
             sys.exit(f"Klasörde {len(files)} dosya var, {len(segs)} bölüm bekleniyor.")
         parts = [load(os.path.join(rec, f)) for f in files]
     else:
-        parts = split_single(load(rec), len(segs))
+        parts = split_single(load(rec), segs, aliases)
 
     # temizlik: low-cut + tüm kaydı -16 LUFS'a getir
     sos = butter(2, 80 / (SR / 2), "high", output="sos")
