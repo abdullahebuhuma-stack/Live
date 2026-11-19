@@ -6,19 +6,6 @@
     "speakingRate": 1.08,
     "pitch": -1.0
   },
-  "pace": {
-    "lead": {
-      "hook": 0.25,
-      "device": 0.45,
-      "outro": 0.35
-    },
-    "tail": {
-      "hook": 0.2,
-      "device": 1.3,
-      "outro": 1.2
-    },
-    "maxPause": 0.3
-  },
   "aliases": {
     "Minimoog": "Minimug",
     "TR-808": "ti ar sekiz yüz sekiz",

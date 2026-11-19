@@ -392,7 +392,7 @@ def limiter(x, ceiling=0.89, look=0.004, rel=0.08):
     return x * out
 
 
-def main(tl_path):
+def main(tl_path, bgm_path=None):
     tl = json.load(open(tl_path))
     out_dir = os.path.dirname(tl_path)
     D = tl["duration"]; N = sec(D) + sec(0.5)
@@ -405,14 +405,14 @@ def main(tl_path):
         if seg.get("voiceFile"):
             place(voice, read_wav(seg["voiceFile"]), seg["voiceStart"])
         if seg["kind"] == "hook":
-            place(music, pad_drone(e - s + 0.4), s, 0.9)
+            if not bgm_path: place(music, pad_drone(e - s + 0.4), s, 0.9)
             place(sfx, riser(e - s), s, 0.5)
         elif seg["kind"] == "device":
             dev = seg["device"]; devices_seen.append(dev)
             sig, ev = DEVICES[dev](e - s, s)
             # anlatım altında düşük, "DİNLE" anında tam ses
             n = len(sig); tt = np.arange(n) / SR + s
-            gain = np.where(tt < ve, 0.42, 1.0)
+            gain = np.where(tt < ve, 0.0 if bgm_path else 0.42, 1.0)
             gain = lp(gain, 12, 1)
             gain *= np.clip((tt - s) / 0.05, 0, 1) * np.clip((e - tt) / 0.12, 0, 1)
             place(music, sig * gain, s)
@@ -428,7 +428,7 @@ def main(tl_path):
             a, ev1 = dev_808(e - s, s)
             b, _ = dev_dx7(e - s, s)
             g = np.clip((e - (np.arange(len(a)) / SR + s)) / 1.2, 0, 1)
-            place(music, (a * 0.55 + b * 0.8) * g, s, 0.6)
+            if not bgm_path: place(music, (a * 0.55 + b * 0.8) * g, s, 0.6)
             events += [x for x in ev1 if x["type"] == "step"]
 
     # vokal işleme: low-cut + hafif kompresyon
@@ -442,17 +442,39 @@ def main(tl_path):
     duck = lp(duck, 8, 1)
     music_bus = hp(music, 30) * duck
     mix = voice + music_bus * 0.85 + sfx * (0.6 + 0.4 * duck)
+    L = R_ = mix
+    if bgm_path:
+        import subprocess
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", bgm_path, "-ac", "2", "-ar", str(SR), "-f", "f32le", "-"],
+                             capture_output=True, check=True).stdout
+        bg = np.frombuffer(raw, dtype=np.float32).astype(float).reshape(-1, 2)
+        if len(bg) < N:  # kısa ise döngü
+            bg = np.tile(bg, (N // len(bg) + 1, 1))
+        bg = bg[:N].copy()
+        bg *= 10 ** ((-14 - pyln.Meter(SR).integrated_loudness(bg)) / 20)
+        tt = np.arange(N) / SR
+        env = np.ones(N)
+        for seg in tl["segments"]:  # DİNLE anlarında fon geri çekilir
+            if seg["kind"] == "device":
+                env[(tt >= seg["voiceEnd"]) & (tt < seg["end"])] = 0.3
+        env = lp(env, 6, 1)
+        env *= np.clip(tt / 0.3, 0, 1) * np.clip((D + 0.4 - tt) / 1.5, 0, 1)
+        g = env * (1 - 0.6 * (1 - duck) / 0.55)  # konuşmada ~-12 dB
+        bg = bg * (g * 0.55)[:, None]
+        L, R_ = mix + bg[:, 0], mix + bg[:, 1]
+        music_bus = music_bus + bg.mean(1) / 0.85
 
     # loudness: -14 LUFS, sonra limiter (−1 dBFS)
     meter = pyln.Meter(SR)
-    loud = meter.integrated_loudness(mix)
-    mix = mix * 10 ** ((-14 - loud) / 20)
-    mix = limiter(mix, ceiling=10 ** (-1.2 / 20))
-    loud2 = meter.integrated_loudness(mix)
-    mix *= 10 ** ((-14 - loud2) / 20)
-    mix = np.clip(mix, -0.891, 0.891)
-
-    stereo = np.stack([mix, mix], 1)
+    st = np.stack([L, R_], 1)
+    st *= 10 ** ((-14 - meter.integrated_loudness(st)) / 20)
+    pk = np.maximum(np.abs(st[:, 0]), np.abs(st[:, 1]))
+    g = limiter(pk, ceiling=10 ** (-1.2 / 20)) / np.maximum(pk, 1e-9)
+    st *= g[:, None]
+    st *= 10 ** ((-14 - meter.integrated_loudness(st)) / 20)
+    st = np.clip(st, -0.891, 0.891)
+    mix = st.mean(1)
+    stereo = st
     with wave.open(os.path.join(out_dir, "mix.wav"), "wb") as w:
         w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR)
         w.writeframes((stereo * 32767).astype(np.int16).tobytes())
@@ -485,8 +507,8 @@ def main(tl_path):
     events.sort(key=lambda x: x["t"])
     json.dump(events, open(os.path.join(out_dir, "events.json"), "w"), separators=(",", ":"))
     pk = 20 * np.log10(np.abs(mix).max() + 1e-9)
-    print(f"mix.wav: {len(mix)/SR:.1f} sn, {meter.integrated_loudness(mix):.1f} LUFS, tepe {pk:.1f} dBFS, {len(events)} olay")
+    print(f"mix.wav: {len(mix)/SR:.1f} sn, {meter.integrated_loudness(stereo):.1f} LUFS, tepe {pk:.1f} dBFS, {len(events)} olay")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
